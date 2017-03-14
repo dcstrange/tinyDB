@@ -1,0 +1,4 @@
+1._loadRecordBlk_ 如何判断一个desp是否仍然属于自己?
+tid和blockID
+
+2.在load Table元信息的时候初始化每个属性的占位. 

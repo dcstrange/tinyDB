@@ -1,0 +1,295 @@
+%{
+extern int yylex();
+extern int yyerror();
+extern int lex_init();
+#include "include/global.h"	
+#include "include/metaUtility.h"
+#include "include/recordmanager.h"
+
+#include <stdio.h>
+
+char* tbname;
+static unsigned int attrcnt;
+static attrinfo attrs[_MAXNUM_TB_ATTR];
+
+static int funcRnt;
+
+static int curPos;
+static char recordstr[4096];
+
+Condition cond[20];
+int condcnt;
+int op;
+
+static int is_ares;
+static int is_uni;
+static int is_order;
+
+static char errmsg[4096];
+//static Table* _proctable;
+
+//static FILE* LOG;
+%}
+
+%union{
+	int intval;
+	char* strval;
+}
+
+%start sql_start
+
+%token <strval> NAME
+%token <strval> STRING
+%token <strval> NUMBER
+%token <strval> COMPARISION
+
+	/* operator */
+%left	 AND
+%left COMPARISION /* < <= > >= <> = */
+%left '+' '-'
+%left '*' '/'
+
+	/* reserved keywords */
+%token SELECT FROM WHERE ORDER BY ASC DESC
+%token ALL UNIQUE DISTINCT
+%token CREATE TABLE DROP INDEX
+%token INSERT INTO VALUES DELETE
+%token CHARACTER INTEGER DATE
+%token SHOW TABLES
+%token EXIT
+
+%%
+
+sql_start:
+		sql_func
+		{
+			if(funcRnt == 0)
+				printf("> Success.\n");
+			else if(funcRnt < 0)
+			{
+				printf("> Failure:%d> %s\n",funcRnt,errmsg);
+			}
+			return 0;
+		}
+	|	EXIT
+		{
+			if(CloseAllTable()!=0)
+			{
+				printf("> Failure: cannot flush all tables..\n");
+				return 0;
+			}
+			return -1;
+		}
+	;
+sql_func:
+		';'
+		{
+			funcRnt = 100;
+		}
+	|	table_def
+	|	table_drop
+	|	insert_stat
+	|	delete_stat
+	|	select_stat
+	;
+/* create table */
+table_def:
+		CREATE TABLE table '(' table_attr_list ')' ';'
+		{
+			funcRnt = CreateTable(tbname, attrcnt, attrs,errmsg);		
+		}
+	;
+
+table:
+		NAME
+		{
+			tbname = $1;
+		}
+	;
+table_attr_list:
+		column_def
+	|	table_attr_list ',' column_def
+	;
+column_def:
+		column data_type
+		{
+			attrcnt++;
+		}
+	;
+column:
+		NAME
+		{
+			attrs[attrcnt].name = $1;
+			cond[condcnt].columnName = $1;
+		}
+	;
+data_type:
+		CHARACTER '(' NUMBER ')'
+		{
+			attrs[attrcnt].type = CHAR;
+			attrs[attrcnt].size_used = atoi($3);
+		}
+	|	INTEGER
+		{
+			attrs[attrcnt].type = INT;
+			attrs[attrcnt].size_used = 1;
+		}
+	|	DATE
+		{
+			attrs[attrcnt].type = DATE;
+			attrs[attrcnt].size_used = 1;
+		}
+	;
+/* drop table */
+table_drop:
+		DROP TABLE table ';'
+		{
+			funcRnt = DropTable(tbname,errmsg);
+		}
+	;
+/**************************************
+**About Records operations Statements
+**************************************/
+/* insert statements */
+insert_stat:
+		INSERT INTO table VALUES '(' insert_list ')' ';'
+		{
+			funcRnt = InsertRecord("newdb",tbname,recordstr,errmsg);
+		}
+	; 	
+insert_list:
+		NUMBER
+		{
+			strcpy(recordstr+curPos, $1);
+			curPos+=strlen($1);
+		}
+	|	STRING
+		{
+			strcpy(recordstr+curPos, $1);
+			curPos+=strlen($1);
+		}
+	|	insert_list ',' NUMBER
+		{
+			strcpy(recordstr+curPos, ",");
+			curPos++;
+
+			strcpy(recordstr+curPos, $3);
+			curPos += strlen($3);
+		}
+	|	insert_list ',' STRING
+		{
+			strcpy(recordstr+curPos, ",");
+			curPos++;
+
+			strcpy(recordstr+curPos, $3);
+			curPos += strlen($3);
+		}
+	;
+	/* delete statement */
+delete_stat:
+		DELETE FROM table where_clause ';'
+		{
+			funcRnt = DeleteRecord(tbname, condcnt, cond,errmsg);
+		}
+	;
+/* select statements */
+select_stat:
+		select_clause FROM table select_where_clause';'
+		{
+			funcRnt = SelectRecord(tbname, condcnt, cond,errmsg);
+		}
+	;
+select_clause:
+	|	SELECT unique '*'
+		{
+			is_ares = 1;
+		}
+	;
+unique:
+		/* empty */
+		{
+			is_uni = 0;
+		}
+	|	ALL
+		{
+			is_uni = 0;
+		}
+	|	DISTINCT
+		{
+			is_uni = 1;
+		}
+	|	UNIQUE
+		{
+			is_uni = 1;
+		}
+	;
+where_clause:
+		/* empty */
+		{
+			is_order = 1;
+		}
+	|	WHERE condition
+		{
+			is_order = 1;
+		}
+	;
+condition:
+		expr
+		{
+			if (strcmp(op, "=") == 0) cond[condcnt].op = EQ;
+			else if (strcmp(op, ">=") == 0) cond[condcnt].op = GE;
+			else if (strcmp(op, "<=") == 0) cond[condcnt].op = LE;
+			else if (strcmp(op, ">") == 0) cond[condcnt].op = GT;
+			else if (strcmp(op, "<") == 0) cond[condcnt].op = LT;
+			else if (strcmp(op, "<>") == 0) cond[condcnt].op = NE;
+			condcnt++;
+		}
+	|	condition AND expr
+		{
+			if (strcmp(op, "=") == 0) cond[condcnt].op = EQ;
+			else if (strcmp(op, ">=") == 0) cond[condcnt].op = GE;
+			else if (strcmp(op, "<=") == 0) cond[condcnt].op = LE;
+			else if (strcmp(op, ">") == 0) cond[condcnt].op = GT;
+			else if (strcmp(op, "<") == 0) cond[condcnt].op = LT;
+			else if (strcmp(op, "<>") == 0) cond[condcnt].op = NE;
+			condcnt++;
+		}
+	;
+expr:
+		column COMPARISION column
+		{
+			op = $2;
+		}
+	|	column COMPARISION NUMBER
+		{
+			op = $2;
+			cond[condcnt].dataType = INT;
+			strcpy(cond[condcnt].data, $3);
+		}
+	|	column COMPARISION STRING
+		{
+			op = $2;
+			cond[condcnt].dataType = CHAR;
+			strcpy(cond[condcnt].data, $3);
+		}
+	;
+
+%%
+
+void parser_init()
+{
+	lex_init();
+	attrcnt = 0;
+	tbname = NULL;
+	funcRnt = 0;
+	curPos = 0;
+	condcnt = 0;
+	op =0;
+	//_proctable = NULL;
+	//LOG = fopen("/home/ly/log","rb+");
+	//	printf("open log failure\n");
+	return;
+}
+
+
+                          
